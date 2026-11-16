@@ -89,7 +89,9 @@ All changes are code reviewed. For non-trivial changes, the reviewer should be a
 
 ## Copyright and license
 
-Code is contributed under Apache 2.0, specifications under the Community Specification License 1.0, and documentation under CC BY 4.0, regardless of where in the repository the file lives. The SPDX header on each file records which applies.
+Code is contributed under [Apache 2.0](LICENSE.md), specifications under the [Community Specification License 1.0](https://github.com/lfdt-ibc/ibc/blob/main/spec/01-community-specification-license-v1.md) (the IBC specifications are developed in [lfdt-ibc/ibc](https://github.com/lfdt-ibc/ibc/tree/main/spec)), and documentation under [CC BY 4.0](docs/LICENSE), regardless of where in the repository the file lives. The SPDX header on each file records which applies, except in snapshots of the documentation at past releases, which carry none.
+
+Documentation contributed before [`docs/LICENSE`](docs/LICENSE) was added was contributed under the license this repository had at the time: the MIT License until 22 February 2026 ([#950](https://github.com/lfdt-ibc/ibc-contracts/pull/950)), and [Apache 2.0](LICENSE.md) from then on. Copies received under those terms remain available under them.
 
 ## Trivial contributions
 
