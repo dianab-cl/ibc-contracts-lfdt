@@ -6,6 +6,8 @@
 mod error;
 pub mod layout;
 pub mod proof;
+#[cfg(test)]
+mod test_layout;
 
 pub use error::TrieDBError;
 pub use proof::{

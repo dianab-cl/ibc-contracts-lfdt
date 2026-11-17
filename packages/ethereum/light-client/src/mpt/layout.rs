@@ -34,7 +34,7 @@ use std::{borrow::Borrow, ops::Range};
 
 use hash_db::Hasher;
 use primitive_types::H256;
-use rlp::{DecoderError, Prototype, Rlp, RlpStream};
+use rlp::{DecoderError, Prototype, Rlp};
 use sha3::{Digest, Keccak256};
 use trie_db::{
     node::{NibbleSlicePlan, NodeHandlePlan, NodePlan, Value, ValuePlan},
@@ -45,9 +45,9 @@ use trie_db::{
 static EMPTY_NODE: [u8; 1] = rlp::NULL_RLP;
 
 /// Hex-prefix flag of a path that ends in a leaf.
-const HP_LEAF: u8 = 0x20;
+pub(super) const HP_LEAF: u8 = 0x20;
 /// Hex-prefix flag of a path with an odd number of nibbles.
-const HP_ODD: u8 = 0x10;
+pub(super) const HP_ODD: u8 = 0x10;
 
 /// Length of a Keccak-256 hash, and the size from which a child is referenced by its hash.
 const HASH_LENGTH: usize = 32;
@@ -132,45 +132,6 @@ fn decode_child(item: &Rlp<'_>, offset: usize) -> Result<NodeHandlePlan, Decoder
     }
 }
 
-/// Hex-prefix encodes a path of `number_nibble` nibbles, given as `trie_db` provides it: packed
-/// two nibbles per byte, with an odd first nibble alone in the low half of the first byte.
-fn encode_path(partial: impl Iterator<Item = u8>, number_nibble: usize, leaf: bool) -> Vec<u8> {
-    let flag = if leaf { HP_LEAF } else { 0 };
-    let mut partial = partial;
-    let mut path = Vec::with_capacity(number_nibble / 2 + 1);
-    if number_nibble % 2 == 1 {
-        let first = partial.next().unwrap_or_default();
-        path.push(flag | HP_ODD | (first & 0x0f));
-    } else {
-        path.push(flag);
-    }
-    path.extend(partial);
-    path
-}
-
-/// Appends a child reference to a branch or extension being encoded.
-fn append_child(stream: &mut RlpStream, child: Option<&ChildReference<H256>>) {
-    match child {
-        Some(ChildReference::Hash(hash)) => {
-            stream.append(&hash.as_bytes());
-        }
-        Some(ChildReference::Inline(data, len)) => {
-            stream.append_raw(&data.as_bytes()[..*len], 1);
-        }
-        None => {
-            stream.append_empty_data();
-        }
-    }
-}
-
-/// Returns the bytes of a value. [`EthLayout`] stores every value in its node.
-fn inline_value<'a>(value: &Value<'a>) -> &'a [u8] {
-    match *value {
-        Value::Inline(data) => data,
-        Value::Node(_) => unreachable!("EthLayout stores every value inline"),
-    }
-}
-
 impl NodeCodec for RlpNodeCodec {
     type Error = DecoderError;
     type HashOut = H256;
@@ -226,37 +187,25 @@ impl NodeCodec for RlpNodeCodec {
         &EMPTY_NODE
     }
 
-    fn leaf_node(partial: impl Iterator<Item = u8>, number_nibble: usize, value: Value) -> Vec<u8> {
-        let mut stream = RlpStream::new_list(2);
-        stream.append(&encode_path(partial, number_nibble, true).as_slice());
-        stream.append(&inline_value(&value));
-        stream.out().to_vec()
+    // Proof verification only decodes nodes; the tests encode them with `test_layout`.
+
+    fn leaf_node(_: impl Iterator<Item = u8>, _: usize, _: Value) -> Vec<u8> {
+        unreachable!("proof verification does not encode nodes")
     }
 
     fn extension_node(
-        partial: impl Iterator<Item = u8>,
-        number_nibble: usize,
-        child_ref: ChildReference<Self::HashOut>,
+        _: impl Iterator<Item = u8>,
+        _: usize,
+        _: ChildReference<Self::HashOut>,
     ) -> Vec<u8> {
-        let mut stream = RlpStream::new_list(2);
-        stream.append(&encode_path(partial, number_nibble, false).as_slice());
-        append_child(&mut stream, Some(&child_ref));
-        stream.out().to_vec()
+        unreachable!("proof verification does not encode nodes")
     }
 
     fn branch_node(
-        children: impl Iterator<Item = impl Borrow<Option<ChildReference<Self::HashOut>>>>,
-        value: Option<Value>,
+        _: impl Iterator<Item = impl Borrow<Option<ChildReference<Self::HashOut>>>>,
+        _: Option<Value>,
     ) -> Vec<u8> {
-        let mut stream = RlpStream::new_list(17);
-        for child in children {
-            append_child(&mut stream, child.borrow().as_ref());
-        }
-        match value {
-            Some(value) => stream.append(&inline_value(&value)),
-            None => stream.append_empty_data(),
-        };
-        stream.out().to_vec()
+        unreachable!("proof verification does not encode nodes")
     }
 
     fn branch_node_nibbled(
@@ -271,16 +220,18 @@ impl NodeCodec for RlpNodeCodec {
 
 #[cfg(test)]
 mod tests {
+    use rlp::RlpStream;
     use trie_db::{trie_visit, TrieRoot};
 
     use super::*;
+    use crate::mpt::test_layout::{TestCodec, TestLayout};
 
     /// Root of a trie built by `trie_db` with this codec, from unhashed keys.
     fn root(entries: &[(&[u8], &[u8])]) -> H256 {
         let mut entries = entries.to_vec();
         entries.sort();
-        let mut cb = TrieRoot::<EthLayout>::default();
-        trie_visit::<EthLayout, _, _, _, _>(entries, &mut cb);
+        let mut cb = TrieRoot::<TestLayout>::default();
+        trie_visit::<TestLayout, _, _, _, _>(entries, &mut cb);
         cb.root.unwrap_or_else(RlpNodeCodec::hashed_null_node)
     }
 
@@ -342,7 +293,7 @@ mod tests {
     fn decode_roundtrip() {
         let path = [0x1u8, 0x23, 0x45];
         let leaf =
-            RlpNodeCodec::leaf_node(path.iter().copied(), 5, Value::Inline(b"value of the leaf"));
+            TestCodec::leaf_node(path.iter().copied(), 5, Value::Inline(b"value of the leaf"));
         let NodePlan::Leaf { partial, value } = RlpNodeCodec::decode_plan(&leaf).unwrap() else {
             panic!("expected a leaf");
         };

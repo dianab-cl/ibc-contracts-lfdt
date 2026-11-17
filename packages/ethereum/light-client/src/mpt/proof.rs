@@ -140,6 +140,7 @@ mod tests {
     use trie_db::{trie_visit, Recorder, TrieBuilder};
 
     use super::*;
+    use crate::mpt::test_layout::TestLayout;
 
     /// The fields of an account, with alloy types, to build the test tries.
     #[derive(Debug, Clone)]
@@ -173,13 +174,13 @@ mod tests {
         leaves.sort();
 
         let mut db = MemoryDB::<KeccakHasher, HashKey<_>, Vec<u8>>::default();
-        let mut builder = TrieBuilder::<EthLayout, _>::new(&mut db);
-        trie_visit::<EthLayout, _, _, _, _>(leaves, &mut builder);
+        let mut builder = TrieBuilder::<TestLayout, _>::new(&mut db);
+        trie_visit::<TestLayout, _, _, _, _>(leaves, &mut builder);
         let root = builder.root.expect("the trie is not empty");
 
-        let mut recorder = Recorder::<EthLayout>::new();
+        let mut recorder = Recorder::<TestLayout>::new();
         {
-            let trie = TrieDBBuilder::<EthLayout>::new(&db, &root)
+            let trie = TrieDBBuilder::<TestLayout>::new(&db, &root)
                 .with_recorder(&mut recorder)
                 .build();
             trie.get(keccak256(target).as_slice()).unwrap();
