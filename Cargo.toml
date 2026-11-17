@@ -5,7 +5,6 @@ members = [
     "packages/utils",
     "packages/constrained_types",
     "packages/ethereum/light-client",
-    "packages/ethereum/trie-db",
     "packages/ethereum/types",
     "packages/ethereum/apis",
     "packages/ethereum/tree_hash",
@@ -41,7 +40,9 @@ members = [
 # (they are path dependencies of `packages/tendermint-light-client/solana`), which makes
 # `cargo test --all` build and run their tests under this workspace's toolchain instead of
 # the one they are pinned to. They are still usable as path dependencies while excluded.
-exclude = ["ibc-solana"]
+# `packages/ethereum/light-client-v1_3` is a copy of the v1.3 light client that replaces its git
+# source through [patch] below; it keeps the original's MIT licence and dependency versions.
+exclude = ["ibc-solana", "packages/ethereum/light-client-v1_3"]
 resolver = "2"
 
 [workspace.lints]
@@ -73,7 +74,6 @@ sp1-ics07-tendermint-prover             = { path = "packages/sp1-ics07-tendermin
 sp1-ics07-tendermint-update-client      = { path = "ibc-solidity/programs/sp1-programs/update-client", default-features = false }
 sp1-ics07-tendermint-membership         = { path = "ibc-solidity/programs/sp1-programs/membership", default-features = false }
 sp1-ics07-utils                         = { path = "ibc-solidity/programs/sp1-programs/utils" }
-ethereum-trie-db                        = { path = "packages/ethereum/trie-db", default-features = false }
 ethereum-light-client                   = { path = "packages/ethereum/light-client", default-features = false }
 ethereum-types                          = { path = "packages/ethereum/types", default-features = false }
 ethereum-apis                           = { path = "packages/ethereum/apis", default-features = false }
@@ -164,6 +164,7 @@ alloy-network          = { version = "2.0", default-features = false }
 alloy-signer-local     = { version = "2.0", default-features = false }
 alloy-signer           = { version = "2.0", default-features = false }
 alloy-rlp              = { version = "0.3", default-features = false }
+alloy-trie             = { version = "0.9.9", default-features = false }
 alloy-rpc-client       = { version = "2.0", default-features = false }
 alloy-provider         = { version = "2.0", default-features = false }
 alloy-transport        = { version = "2.0", default-features = false }
@@ -233,3 +234,13 @@ tendermint-light-client-verifier.git = "https://github.com/cometbft/tendermint-r
 tendermint-config.git = "https://github.com/cometbft/tendermint-rs"
 tendermint-rpc.git = "https://github.com/cometbft/tendermint-rs"
 tendermint-testgen.git = "https://github.com/cometbft/tendermint-rs"
+# `halo2` 0.1.0-beta.2 is an empty, BOSL-1.0 licensed crate that `zkhash` (via SP1) depends on
+# without using. Replace it with an empty Apache-2.0 crate. See packages/patches/halo2.
+halo2 = { path = "packages/patches/halo2" }
+
+[patch."https://github.com/cosmos/ibc-contracts"]
+# The v1.3 compatibility relayer (`*-v1_3` dependencies) pins an older revision of this
+# repository, whose `ethereum-light-client` depends on an `ethereum-trie-db` with
+# GPL-3.0-or-later code. Replace it with a copy that uses this workspace's Apache-2.0 `mpt` module
+# instead; see packages/ethereum/light-client-v1_3/Cargo.toml.
+ethereum-light-client = { path = "packages/ethereum/light-client-v1_3" }

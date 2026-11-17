@@ -1477,9 +1477,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-trie"
-version = "0.9.5"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f14b5d9b2c2173980202c6ff470d96e7c5e202c65a9f67884ad565226df7fbb"
+checksum = "70c7c04b6e5a7a2325f53d38c319a47d01c3609b44845ac2801bac9643fe26b9"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -4711,29 +4711,36 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
- "ethereum-trie-db 0.1.0",
+ "alloy-trie",
  "ethereum-types 0.1.0",
+ "hash-db",
+ "hash256-std-hasher",
  "hex",
  "ibc-eureka-solidity-types 0.1.0",
  "ibc-proto 0.52.0",
+ "memory-db",
  "milagro_bls",
+ "primitive-types 0.14.0",
  "prost 0.13.5",
+ "rlp 0.6.1",
+ "rlp-derive",
  "schemars 0.8.22",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "sha3",
  "thiserror 2.0.18",
  "tree_hash 0.1.0",
+ "trie-db",
 ]
 
 [[package]]
 name = "ethereum-light-client"
-version = "0.1.0"
-source = "git+https://github.com/cosmos/ibc-contracts?rev=035aa5eb171b6608614a9bc4e76e79d61c190e39#035aa5eb171b6608614a9bc4e76e79d61c190e39"
+version = "1.3.0"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
- "ethereum-trie-db 0.1.0 (git+https://github.com/cosmos/ibc-contracts?rev=035aa5eb171b6608614a9bc4e76e79d61c190e39)",
+ "ethereum-light-client 0.1.0",
  "ethereum-types 0.1.0 (git+https://github.com/cosmos/ibc-contracts?rev=035aa5eb171b6608614a9bc4e76e79d61c190e39)",
  "hex",
  "schemars 0.8.22",
@@ -4742,41 +4749,6 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "tree_hash 0.1.0 (git+https://github.com/cosmos/ibc-contracts?rev=035aa5eb171b6608614a9bc4e76e79d61c190e39)",
-]
-
-[[package]]
-name = "ethereum-trie-db"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "hash-db",
- "hash256-std-hasher",
- "hex",
- "memory-db 0.34.0",
- "primitive-types 0.14.0",
- "rlp 0.6.1",
- "rlp-derive",
- "sha3",
- "thiserror 2.0.18",
- "trie-db",
-]
-
-[[package]]
-name = "ethereum-trie-db"
-version = "0.1.0"
-source = "git+https://github.com/cosmos/ibc-contracts?rev=035aa5eb171b6608614a9bc4e76e79d61c190e39#035aa5eb171b6608614a9bc4e76e79d61c190e39"
-dependencies = [
- "alloy-primitives",
- "hash-db",
- "hash256-std-hasher",
- "hex",
- "memory-db 0.32.0",
- "primitive-types 0.13.1",
- "rlp 0.6.1",
- "rlp-derive",
- "sha3",
- "thiserror 2.0.18",
- "trie-db",
 ]
 
 [[package]]
@@ -5428,25 +5400,6 @@ dependencies = [
 [[package]]
 name = "halo2"
 version = "0.1.0-beta.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a23c779b38253fe1538102da44ad5bd5378495a61d2c4ee18d64eaa61ae5995"
-dependencies = [
- "halo2_proofs",
-]
-
-[[package]]
-name = "halo2_proofs"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e925780549adee8364c7f2b685c753f6f3df23bde520c67416e93bf615933760"
-dependencies = [
- "blake2b_simd",
- "ff 0.12.1",
- "group 0.12.1",
- "pasta_curves 0.4.1",
- "rand_core 0.6.4",
- "rayon",
-]
 
 [[package]]
 name = "hash-db"
@@ -6108,7 +6061,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "ethereum-apis 0.1.0 (git+https://github.com/cosmos/ibc-contracts?rev=035aa5eb171b6608614a9bc4e76e79d61c190e39)",
- "ethereum-light-client 0.1.0 (git+https://github.com/cosmos/ibc-contracts?rev=035aa5eb171b6608614a9bc4e76e79d61c190e39)",
+ "ethereum-light-client 1.3.0",
  "ethereum-types 0.1.0 (git+https://github.com/cosmos/ibc-contracts?rev=035aa5eb171b6608614a9bc4e76e79d61c190e39)",
  "ibc-eureka-relayer-core",
  "ibc-eureka-relayer-lib",
@@ -6133,7 +6086,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "ethereum-apis 0.1.0 (git+https://github.com/cosmos/ibc-contracts?rev=035aa5eb171b6608614a9bc4e76e79d61c190e39)",
- "ethereum-light-client 0.1.0 (git+https://github.com/cosmos/ibc-contracts?rev=035aa5eb171b6608614a9bc4e76e79d61c190e39)",
+ "ethereum-light-client 1.3.0",
  "ethereum-types 0.1.0 (git+https://github.com/cosmos/ibc-contracts?rev=035aa5eb171b6608614a9bc4e76e79d61c190e39)",
  "futures",
  "futures-timer",
@@ -7007,15 +6960,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "memory-db"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "808b50db46293432a45e63bc15ea51e0ab4c0a1647b8eb114e31a3e698dd6fbe"
-dependencies = [
- "hash-db",
 ]
 
 [[package]]
@@ -8261,21 +8205,6 @@ dependencies = [
 
 [[package]]
 name = "pasta_curves"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cc65faf8e7313b4b1fbaa9f7ca917a0eed499a9663be71477f87993604341d8"
-dependencies = [
- "blake2b_simd",
- "ff 0.12.1",
- "group 0.12.1",
- "lazy_static",
- "rand 0.8.6",
- "static_assertions",
- "subtle",
-]
-
-[[package]]
-name = "pasta_curves"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3e57598f73cc7e1b2ac63c79c517b31a0877cd7c402cdcaa311b5208de7a095"
@@ -8522,24 +8451,13 @@ dependencies = [
 
 [[package]]
 name = "primitive-types"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d15600a7d856470b7d278b3fe0e311fe28c2526348549f8ef2ff7db3299c87f5"
-dependencies = [
- "fixed-hash",
- "impl-rlp",
- "uint 0.10.0",
-]
-
-[[package]]
-name = "primitive-types"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "721a1da530b5a2633218dc9f75713394c983c352be88d2d7c9ee85e2c4c21794"
 dependencies = [
  "fixed-hash",
  "impl-rlp",
- "uint 0.10.0",
+ "uint 0.10.2",
 ]
 
 [[package]]
@@ -9012,7 +8930,7 @@ version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "itertools 0.14.0",
  "log",
  "multimap",
@@ -16145,9 +16063,9 @@ dependencies = [
 
 [[package]]
 name = "uint"
-version = "0.10.0"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "909988d098b2f738727b161a106cfc7cab00c539c2687a8836f8e565976fb53e"
+checksum = "2833f28e3adbd1b867292ee4053252ea89ab85e44e5e4701ffead8cada0539fa"
 dependencies = [
  "byteorder",
  "crunchy",
@@ -16595,7 +16513,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -17238,7 +17156,7 @@ dependencies = [
  "hex",
  "jubjub",
  "lazy_static",
- "pasta_curves 0.5.1",
+ "pasta_curves",
  "rand 0.8.6",
  "serde",
  "sha2 0.10.9",

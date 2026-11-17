@@ -1,0 +1,52 @@
+# Copy of `ethereum-light-client` from github.com/cosmos/ibc-contracts at revision
+# 035aa5eb171b6608614a9bc4e76e79d61c190e39 (tag cw-ics08-wasm-eth-v1.3.0), published under the
+# MIT licence in LICENSE.md. It replaces that git dependency of the v1.3 compatibility code (see
+# the [patch] sections of ../../../Cargo.toml and of
+# ../../../ibc-solidity/programs/cw-ics08-wasm-eth/Cargo.toml). Changes from the original:
+#   - The dependencies are spelled out instead of inherited from the original workspace.
+#   - Storage proofs are verified with the Apache-2.0 `mpt` module of this repository's
+#     `ethereum-light-client` instead of the `ethereum-trie-db` crate, which contained
+#     GPL-3.0-or-later code; see src/membership.rs and src/verify.rs.
+#   - The version is 1.3.0, so that it can sit next to this repository's
+#     `ethereum-light-client` 0.1.0 in a lockfile.
+#   - A test in src/sync_protocol_helpers.rs imports `FromHex` from `alloy_primitives::hex`, as
+#     the current alloy-primitives no longer implements the `hex` crate's trait.
+# It is not a member of the root workspace (see `exclude` there). Its tests run from the
+# cw-ics08-wasm-eth workspace, which enables `test-utils`: `just solidity::test-cargo-cw`.
+
+[package]
+name = "ethereum-light-client"
+version = "1.3.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/cosmos/ibc-contracts"
+publish = false
+
+[features]
+test-utils = ["dep:milagro_bls", "dep:ibc-proto-eureka", "dep:prost", "dep:ibc-eureka-solidity-types"]
+
+[[bin]]
+name = "generate_json_schema"
+path = "src/bin/generate_json_schema.rs"
+
+[dependencies]
+# This repository's light client, for its Merkle Patricia trie proofs (`mpt`).
+ethereum-light-client-mpt = { package = "ethereum-light-client", path = "../light-client", default-features = false }
+
+ethereum-types = { git = "https://github.com/cosmos/ibc-contracts", rev = "035aa5eb171b6608614a9bc4e76e79d61c190e39", default-features = false }
+tree_hash = { git = "https://github.com/cosmos/ibc-contracts", rev = "035aa5eb171b6608614a9bc4e76e79d61c190e39", default-features = false }
+
+alloy-primitives = { version = "1.0", default-features = false, features = ["serde", "hex-compat", "rlp"] }
+alloy-rlp = { version = "0.3", default-features = false, features = ["arrayvec"] }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0", default-features = false }
+thiserror = { version = "2.0", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+schemars = { version = "0.8", default-features = false }
+hex = { version = "0.4", default-features = false }
+
+# Only used for test-utils feature
+milagro_bls = { git = "https://github.com/Snowfork/milagro_bls", rev = "bc2b5b5e8d48b7e2e1bfaa56dc2d93e13cb32095", default-features = false, optional = true }
+ibc-proto-eureka = { package = "ibc-proto", git = "https://github.com/srdtrk/ibc-proto-rs", rev = "7074fb20c3a654e945e5ca46627c5a971d785e04", default-features = false, optional = true }
+prost = { version = "0.13", default-features = false, optional = true }
+ibc-eureka-solidity-types = { git = "https://github.com/cosmos/ibc-contracts", rev = "035aa5eb171b6608614a9bc4e76e79d61c190e39", default-features = false, optional = true }

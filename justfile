@@ -95,6 +95,8 @@ test-cargo testname="--all":
 coverage-cargo:
 	cargo llvm-cov --workspace --locked --no-fail-fast --lcov --output-path lcov.info -- --nocapture
 	cd ibc-solidity/programs/cw-ics08-wasm-eth && cargo llvm-cov --locked --no-fail-fast --lcov --output-path {{justfile_directory()}}/lcov-cw.info -- --nocapture
+	@# The v1.3 light client copy is not a workspace member, so its tests need naming explicitly.
+	cd ibc-solidity/programs/cw-ics08-wasm-eth && cargo test --locked --no-fail-fast -p ethereum-light-client@1.3.0 --lib -- --nocapture
 
 # Run the tests in abigen
 [group('test')]

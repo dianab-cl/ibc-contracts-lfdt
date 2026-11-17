@@ -88,6 +88,8 @@ test-foundry testname=".\\*":
 [group('test')]
 test-cargo-cw:
 	cd programs/cw-ics08-wasm-eth && cargo test --locked --no-fail-fast -- --nocapture
+	@# The v1.3 light client copy is not a workspace member, so its tests need naming explicitly.
+	cd programs/cw-ics08-wasm-eth && cargo test --locked --no-fail-fast -p ethereum-light-client@1.3.0 --lib -- --nocapture
 
 # Run the benchmark tests and update the committed snapshots and Markdown tables
 [group('test')]
