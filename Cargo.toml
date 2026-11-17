@@ -40,9 +40,7 @@ members = [
 # (they are path dependencies of `packages/tendermint-light-client/solana`), which makes
 # `cargo test --all` build and run their tests under this workspace's toolchain instead of
 # the one they are pinned to. They are still usable as path dependencies while excluded.
-# `packages/ethereum/light-client-v1_3` is a copy of the v1.3 light client that replaces its git
-# source through [patch] below; it keeps the original's MIT licence and dependency versions.
-exclude = ["ibc-solana", "packages/ethereum/light-client-v1_3"]
+exclude = ["ibc-solana"]
 resolver = "2"
 
 [workspace.lints]
@@ -234,13 +232,3 @@ tendermint-light-client-verifier.git = "https://github.com/cometbft/tendermint-r
 tendermint-config.git = "https://github.com/cometbft/tendermint-rs"
 tendermint-rpc.git = "https://github.com/cometbft/tendermint-rs"
 tendermint-testgen.git = "https://github.com/cometbft/tendermint-rs"
-# `halo2` 0.1.0-beta.2 is an empty, BOSL-1.0 licensed crate that `zkhash` (via SP1) depends on
-# without using. Replace it with an empty Apache-2.0 crate. See packages/patches/halo2.
-halo2 = { path = "packages/patches/halo2" }
-
-[patch."https://github.com/cosmos/ibc-contracts"]
-# The v1.3 compatibility relayer (`*-v1_3` dependencies) pins an older revision of this
-# repository, whose `ethereum-light-client` depends on an `ethereum-trie-db` with
-# GPL-3.0-or-later code. Replace it with a copy that uses this workspace's Apache-2.0 `mpt` module
-# instead; see packages/ethereum/light-client-v1_3/Cargo.toml.
-ethereum-light-client = { path = "packages/ethereum/light-client-v1_3" }
