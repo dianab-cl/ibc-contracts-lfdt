@@ -134,9 +134,10 @@ fn get_node(
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::{keccak256, Bytes, U256};
-    use alloy_rlp::{Decodable, Encodable};
-    use alloy_trie::{nodes::TrieNode, proof::ProofRetainer, HashBuilder, Nibbles};
+    use alloy_primitives::{b256, keccak256, Bytes, U256};
+    use alloy_rlp::Encodable;
+    use rlp::{Rlp, RlpStream};
+    use trie_db::{trie_visit, Recorder, TrieBuilder};
 
     use super::*;
 
@@ -162,28 +163,33 @@ mod tests {
     }
 
     /// Builds a secure trie (keys hashed with keccak256) from `entries` and returns its root and
-    /// the proof for `target`, ordered from the root node.
+    /// the proof for `target`: the nodes that a lookup of `target` reads, from the root node, as
+    /// `eth_getProof` returns them.
     fn build_trie(entries: &[(Vec<u8>, Vec<u8>)], target: &[u8]) -> (B256, Vec<Bytes>) {
-        let target_path = Nibbles::unpack(keccak256(target));
         let mut leaves: Vec<_> = entries
             .iter()
-            .map(|(key, value)| (Nibbles::unpack(keccak256(key)), value.clone()))
+            .map(|(key, value)| (keccak256(key), value.clone()))
             .collect();
-        leaves.sort_by_key(|(path, _)| *path);
+        leaves.sort();
 
-        let mut builder =
-            HashBuilder::default().with_proof_retainer(ProofRetainer::new(vec![target_path]));
-        for (path, value) in leaves {
-            builder.add_leaf(path, &value);
+        let mut db = MemoryDB::<KeccakHasher, HashKey<_>, Vec<u8>>::default();
+        let mut builder = TrieBuilder::<EthLayout, _>::new(&mut db);
+        trie_visit::<EthLayout, _, _, _, _>(leaves, &mut builder);
+        let root = builder.root.expect("the trie is not empty");
+
+        let mut recorder = Recorder::<EthLayout>::new();
+        {
+            let trie = TrieDBBuilder::<EthLayout>::new(&db, &root)
+                .with_recorder(&mut recorder)
+                .build();
+            trie.get(keccak256(target).as_slice()).unwrap();
         }
-        let root = builder.root();
-        let proof = builder
-            .take_proof_nodes()
-            .matching_nodes_sorted(&target_path)
+        let proof = recorder
+            .drain()
             .into_iter()
-            .map(|(_, node)| node)
+            .map(|record| record.data.into())
             .collect();
-        (root, proof)
+        (B256::from(root.0), proof)
     }
 
     fn slot(n: u64) -> [u8; 32] {
@@ -365,14 +371,17 @@ mod tests {
         let (root, mut proof) = build_trie(&account_entries(), address.as_slice());
         // Swap the leaf for one that claims a different storage root.
         let leaf_index = proof.len() - 1;
-        let TrieNode::Leaf(mut leaf) = TrieNode::decode(&mut &proof[leaf_index][..]).unwrap()
-        else {
-            panic!("expected leaf node");
-        };
+        let leaf = Rlp::new(&proof[leaf_index]);
+        assert_eq!(leaf.item_count().unwrap(), 2);
+        let path = leaf.at(0).unwrap().data().unwrap().to_vec();
+        assert_eq!(path[0] & 0x20, 0x20, "expected a leaf node");
         let mut forged = account(9);
         forged.storage_root = B256::repeat_byte(0x11);
-        leaf.value = encode_account(&forged);
-        proof[leaf_index] = alloy_rlp::encode(TrieNode::Leaf(leaf)).into();
+        let mut stream = RlpStream::new_list(2);
+        stream
+            .append(&path.as_slice())
+            .append(&encode_account(&forged).as_slice());
+        proof[leaf_index] = stream.out().to_vec().into();
         let err =
             verify_account_storage_root(root, address, &proof, forged.storage_root).unwrap_err();
         assert!(matches!(err, TrieDBError::GetTrieNodeFailed(_)), "{err:?}");
@@ -386,5 +395,19 @@ mod tests {
             verify_account_storage_root(root, address, Vec::<Bytes>::new(), B256::ZERO).is_err()
         );
         assert!(verify_storage_exclusion_proof(&root, &slot(1), Vec::<Bytes>::new()).is_err());
+    }
+
+    #[test]
+    fn test_tries_match_alloy_trie() {
+        // Roots of the test tries computed with alloy-trie, an independent implementation of
+        // the Ethereum trie.
+        assert_eq!(
+            build_trie(&storage_entries(), &slot(7)).0,
+            b256!("46252802c87ba998fd8ebbe7652805c613a9612a13a9d79d1dc3e15ecf9ee64c")
+        );
+        assert_eq!(
+            build_trie(&account_entries(), &slot(7)).0,
+            b256!("9b164c4455c71585f69e367ac6522154f257e44bfd29f8233d76c1b00f0dace1")
+        );
     }
 }

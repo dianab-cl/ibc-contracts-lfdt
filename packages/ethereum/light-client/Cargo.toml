@@ -52,5 +52,3 @@ milagro_bls = { workspace = true }
 ibc-proto-eureka = { workspace = true }
 prost = { workspace = true }
 ibc-eureka-solidity-types = { workspace = true }
-# An independent implementation of the Ethereum trie, to check src/mpt against in tests.
-alloy-trie = { workspace = true, features = ["std"] }

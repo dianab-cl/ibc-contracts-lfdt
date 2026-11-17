@@ -2,7 +2,6 @@
 
 use anchor_lang::prelude::*;
 
-pub mod allocator;
 pub mod conversions;
 pub mod error;
 pub mod events;
@@ -16,6 +15,7 @@ pub mod types;
 use instructions::*;
 
 declare_id!("HqPcGpVHxNNFfVatjhG78dFVMwjyZixoKPdZSt3d3TdD");
+solana_allocator::custom_heap!();
 
 pub use types::{
     AppState, ClientState, ConsensusState, IbcHeight, UpdateResult, UploadChunkParams,

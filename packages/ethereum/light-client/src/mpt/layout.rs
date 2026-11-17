@@ -2,10 +2,7 @@
 
 //! The layout of Ethereum's Merkle Patricia tries, for the [`trie_db`] crate.
 //!
-//! Written from the node encoding in the Ethereum Yellow Paper (Appendix D, "Modified Merkle
-//! Patricia Tree") against the [`NodeCodec`] and [`TrieLayout`] traits of `trie_db`.
-//!
-//! Every node is RLP encoded:
+//! Every node is RLP encoded (Ethereum Yellow Paper, Appendix D):
 //! - the empty node is the empty string, `0x80`;
 //! - a leaf is `[HP(path, leaf), value]` and an extension is `[HP(path, extension), child]`,
 //!   where `HP` is the hex-prefix encoding of the remaining key nibbles;
@@ -14,12 +11,30 @@
 //!
 //! A child is referenced by the Keccak-256 hash of its encoding, or embedded as is when its
 //! encoding is shorter than 32 bytes.
+//!
+//! # Compatibility
+//!
+//! [`RlpNodeCodec`] decodes nodes exactly as the codec of the `ethereum-trie-db` crate it
+//! replaces: every proof is accepted or rejected as before, with the same error. That includes
+//! encodings no Ethereum client produces, which are decoded leniently:
+//! - Bytes after the empty node are ignored, and bytes after a list are read as more items of
+//!   it.
+//! - A path is read from the payload of its item, whether a string or a list. An empty string
+//!   or list is an extension with no nibbles.
+//! - Of the hex-prefix flag nibble only the leaf and odd bits are read, and the padding nibble
+//!   of an even path is ignored.
+//! - A leaf or branch value is the payload of its item, whether a string or a list.
+//! - An empty string or list as a branch child or value means none.
+//! - A child that is a 32-byte string is a hash. Anything else, of any length, is an embedded
+//!   node, which fails to decode only if a lookup reaches it.
+//!
+//! The tests below pin each of these down.
 
 use std::{borrow::Borrow, ops::Range};
 
 use hash_db::Hasher;
 use primitive_types::H256;
-use rlp::{Rlp, RlpStream};
+use rlp::{DecoderError, Prototype, Rlp, RlpStream};
 use sha3::{Digest, Keccak256};
 use trie_db::{
     node::{NibbleSlicePlan, NodeHandlePlan, NodePlan, Value, ValuePlan},
@@ -71,23 +86,18 @@ impl TrieLayout for EthLayout {
     type Codec = RlpNodeCodec;
 }
 
-/// An error decoding a trie node.
-#[derive(Debug, thiserror::Error)]
-pub enum NodeCodecError {
-    /// The node is not valid RLP.
-    #[error("invalid rlp: {0}")]
-    Rlp(#[from] rlp::DecoderError),
-    /// The node is valid RLP, but not a valid trie node.
-    #[error("invalid trie node: {0}")]
-    InvalidNode(&'static str),
-}
+/// The error for RLP that is not a trie node; the message is the one `ethereum-trie-db` used.
+const NOT_A_NODE: DecoderError = DecoderError::Custom("Rlp is not valid.");
+
+/// Number of children of a branch; a branch has one more item, its value.
+const BRANCH_CHILDREN: usize = 16;
 
 /// The [`NodeCodec`] of Ethereum tries; see the module documentation for the encoding.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RlpNodeCodec;
 
 /// Returns the range of `item`'s payload in the node, given the offset of `item` in the node.
-fn payload_range(item: &Rlp<'_>, offset: usize) -> Result<Range<usize>, NodeCodecError> {
+fn payload_range(item: &Rlp<'_>, offset: usize) -> Result<Range<usize>, DecoderError> {
     let info = item.payload_info()?;
     let start = offset + info.header_len;
     Ok(start..start + info.value_len)
@@ -95,51 +105,30 @@ fn payload_range(item: &Rlp<'_>, offset: usize) -> Result<Range<usize>, NodeCode
 
 /// Decodes the hex-prefix encoded path of a leaf or extension. Returns whether the path ends in
 /// a leaf, and where its nibbles are in the node.
-fn decode_path(item: &Rlp<'_>, offset: usize) -> Result<(bool, NibbleSlicePlan), NodeCodecError> {
-    if !item.is_data() {
-        return Err(NodeCodecError::InvalidNode("path is not a string"));
-    }
+fn decode_path(item: &Rlp<'_>, offset: usize) -> Result<(bool, NibbleSlicePlan), DecoderError> {
     let range = payload_range(item, offset)?;
-    let first = *item
-        .data()?
-        .first()
-        .ok_or(NodeCodecError::InvalidNode("empty path"))?;
-    let flags = first >> 4;
-    if flags > 3 {
-        return Err(NodeCodecError::InvalidNode("invalid hex-prefix flags"));
+    if item.is_empty() {
+        return Ok((false, NibbleSlicePlan::new(range.start..range.start, 0)));
     }
-    let is_leaf = flags & (HP_LEAF >> 4) != 0;
-    let plan = if flags & (HP_ODD >> 4) != 0 {
+    // Not empty, so the payload (of a string or a list) has a first byte.
+    let flags = item.data()?.first().copied().unwrap_or_default();
+    let is_leaf = flags & HP_LEAF != 0;
+    let plan = if flags & HP_ODD != 0 {
         // An odd path starts in the low nibble of the flag byte.
         NibbleSlicePlan::new(range, 1)
     } else {
-        if first & 0x0f != 0 {
-            return Err(NodeCodecError::InvalidNode("non-zero hex-prefix padding"));
-        }
         NibbleSlicePlan::new(range.start + 1..range.end, 0)
     };
     Ok((is_leaf, plan))
 }
 
-/// Decodes a child reference of a branch or extension: `None` for the empty string.
-fn decode_child(item: &Rlp<'_>, offset: usize) -> Result<Option<NodeHandlePlan>, NodeCodecError> {
-    if item.is_list() {
-        // An embedded node is stored as its own encoding, which is shorter than a hash.
-        let len = item.as_raw().len();
-        if len >= HASH_LENGTH {
-            return Err(NodeCodecError::InvalidNode(
-                "embedded node is not shorter than a hash",
-            ));
-        }
-        return Ok(Some(NodeHandlePlan::Inline(offset..offset + len)));
-    }
-    let range = payload_range(item, offset)?;
-    match range.len() {
-        0 => Ok(None),
-        HASH_LENGTH => Ok(Some(NodeHandlePlan::Hash(range))),
-        _ => Err(NodeCodecError::InvalidNode(
-            "child is neither empty, a hash nor an embedded node",
-        )),
+/// Decodes the item of a child of a branch or extension: a hash if it is a 32-byte string, and
+/// an embedded node otherwise.
+fn decode_child(item: &Rlp<'_>, offset: usize) -> Result<NodeHandlePlan, DecoderError> {
+    if item.is_data() && item.size() == HASH_LENGTH {
+        Ok(NodeHandlePlan::Hash(payload_range(item, offset)?))
+    } else {
+        Ok(NodeHandlePlan::Inline(offset..offset + item.as_raw().len()))
     }
 }
 
@@ -183,7 +172,7 @@ fn inline_value<'a>(value: &Value<'a>) -> &'a [u8] {
 }
 
 impl NodeCodec for RlpNodeCodec {
-    type Error = NodeCodecError;
+    type Error = DecoderError;
     type HashOut = H256;
 
     fn hashed_null_node() -> Self::HashOut {
@@ -191,65 +180,46 @@ impl NodeCodec for RlpNodeCodec {
     }
 
     fn decode_plan(data: &[u8]) -> Result<NodePlan, Self::Error> {
-        if Self::is_empty_node(data) {
-            return Ok(NodePlan::Empty);
-        }
-
+        // `prototype` counts the items of a list up to the end of `data`, not of the list, and
+        // reads a malformed string as an empty one (see the module documentation).
         let node = Rlp::new(data);
-        if !node.is_list() || node.payload_info()?.total() != data.len() {
-            return Err(NodeCodecError::InvalidNode("not a single RLP list"));
-        }
-        let items = (0..node.item_count()?)
-            .map(|i| node.at_with_offset(i))
-            .collect::<Result<Vec<_>, _>>()?;
-        // The items must take up the whole list, with nothing after the last one.
-        let end = items
-            .last()
-            .map_or(Ok(node.payload_info()?.header_len), |(item, offset)| {
-                item.payload_info().map(|info| offset + info.total())
-            })?;
-        if end != data.len() {
-            return Err(NodeCodecError::InvalidNode("trailing bytes in list"));
-        }
-
-        match items.as_slice() {
-            [(path, path_offset), (second, second_offset)] => {
-                let (is_leaf, partial) = decode_path(path, *path_offset)?;
+        match node.prototype()? {
+            Prototype::Data(0) => Ok(NodePlan::Empty),
+            Prototype::List(2) => {
+                let (path, path_offset) = node.at_with_offset(0)?;
+                let (is_leaf, partial) = decode_path(&path, path_offset)?;
+                let (second, second_offset) = node.at_with_offset(1)?;
                 if is_leaf {
-                    if !second.is_data() {
-                        return Err(NodeCodecError::InvalidNode("leaf value is not a string"));
-                    }
-                    let value = ValuePlan::Inline(payload_range(second, *second_offset)?);
+                    let value = ValuePlan::Inline(payload_range(&second, second_offset)?);
                     Ok(NodePlan::Leaf { partial, value })
                 } else {
-                    if partial.len() == 0 {
-                        return Err(NodeCodecError::InvalidNode("extension with an empty path"));
-                    }
-                    let child = decode_child(second, *second_offset)?
-                        .ok_or(NodeCodecError::InvalidNode("extension without a child"))?;
+                    let child = decode_child(&second, second_offset)?;
                     Ok(NodePlan::Extension { partial, child })
                 }
             }
-            [branch_children @ .., (value, value_offset)] if branch_children.len() == 16 => {
-                let mut children: [Option<NodeHandlePlan>; 16] = Default::default();
-                for (child, (item, offset)) in children.iter_mut().zip(branch_children) {
-                    *child = decode_child(item, *offset)?;
+            Prototype::List(len) if len == BRANCH_CHILDREN + 1 => {
+                let mut children: [Option<NodeHandlePlan>; BRANCH_CHILDREN] = Default::default();
+                for (index, child) in children.iter_mut().enumerate() {
+                    let (item, offset) = node.at_with_offset(index)?;
+                    if !item.is_empty() {
+                        *child = Some(decode_child(&item, offset)?);
+                    }
                 }
-                if !value.is_data() {
-                    return Err(NodeCodecError::InvalidNode("branch value is not a string"));
-                }
-                let range = payload_range(value, *value_offset)?;
-                let value = (!range.is_empty()).then_some(ValuePlan::Inline(range));
+                let (value, value_offset) = node.at_with_offset(BRANCH_CHILDREN)?;
+                let value = if value.is_empty() {
+                    None
+                } else {
+                    Some(ValuePlan::Inline(payload_range(&value, value_offset)?))
+                };
                 Ok(NodePlan::Branch { value, children })
             }
-            _ => Err(NodeCodecError::InvalidNode(
-                "list is neither a leaf, an extension nor a branch",
-            )),
+            _ => Err(NOT_A_NODE),
         }
     }
 
     fn is_empty_node(data: &[u8]) -> bool {
-        data == EMPTY_NODE
+        // Like `ethereum-trie-db`: anything starting with an empty string or list.
+        Rlp::new(data).is_empty()
     }
 
     fn empty_node() -> &'static [u8] {
@@ -325,39 +295,46 @@ mod tests {
 
     #[test]
     fn roots_match_alloy_trie() {
-        // alloy-trie is an independent implementation of the same trie; both must produce the
-        // same root. Keys within a case have the same length, as in Ethereum's tries (alloy-trie
-        // does not support a key that is a prefix of another).
-        let cases: Vec<Vec<(Vec<u8>, Vec<u8>)>> = vec![
+        // The expected roots were computed with alloy-trie, an independent implementation of
+        // the same trie. Keys within a case have the same length, as in Ethereum's tries
+        // (alloy-trie does not support a key that is a prefix of another).
+        type Entries = Vec<(Vec<u8>, Vec<u8>)>;
+        let cases: Vec<(Entries, &str)> = vec![
             // A single leaf.
-            vec![(b"doe".to_vec(), b"reindeer".to_vec())],
+            (
+                vec![(b"doe".to_vec(), b"reindeer".to_vec())],
+                "11a0327cfcc5b7689b6b6d727e1f5f8846c1137caaa9fc871ba31b7cce1b703e",
+            ),
             // Short keys and values: nodes under 32 bytes are embedded in their parent.
-            (0u8..4)
-                .flat_map(|i| (0u8..40).step_by(3).map(move |j| (vec![i, j], vec![j])))
-                .collect(),
+            (
+                (0u8..4)
+                    .flat_map(|i| (0u8..40).step_by(3).map(move |j| (vec![i, j], vec![j])))
+                    .collect(),
+                "bb32d1f5751fa4adc29bd1bc60b49e5bfb690b9cd884e78826921f97ae7d4bc2",
+            ),
             // A long shared prefix: an extension node above a branch.
-            (0u8..5)
-                .map(|i| ([[0xaa; 20].as_slice(), &[i]].concat(), vec![i; 40]))
-                .collect(),
+            (
+                (0u8..5)
+                    .map(|i| ([[0xaa; 20].as_slice(), &[i]].concat(), vec![i; 40]))
+                    .collect(),
+                "2bd7685455748c32dae45f31762916a896859ba436a7f4a405858f432953be76",
+            ),
             // Hashed keys, as in the state and storage tries, with values of varying length.
-            (0u8..=200)
-                .map(|i| (keccak_256(&[i]).to_vec(), vec![i; usize::from(i % 40) + 1]))
-                .collect(),
+            (
+                (0u8..=200)
+                    .map(|i| (keccak_256(&[i]).to_vec(), vec![i; usize::from(i % 40) + 1]))
+                    .collect(),
+                "7923cb386df58f5fa8afa537ceaec1ff11d6783c9905eebd5f79a2007bbf6529",
+            ),
         ];
-        for entries in cases {
+        for (entries, expected) in cases {
             let ours = root(
                 &entries
                     .iter()
                     .map(|(k, v)| (k.as_slice(), v.as_slice()))
                     .collect::<Vec<_>>(),
             );
-            let mut sorted = entries.clone();
-            sorted.sort();
-            let mut builder = alloy_trie::HashBuilder::default();
-            for (key, value) in &sorted {
-                builder.add_leaf(alloy_trie::Nibbles::unpack(key), value);
-            }
-            assert_eq!(ours.as_bytes(), builder.root().as_slice(), "{entries:?}");
+            assert_eq!(hex::encode(ours), expected, "{entries:?}");
         }
     }
 
@@ -374,32 +351,229 @@ mod tests {
         assert_eq!(value.build(&leaf), Value::Inline(b"value of the leaf"));
     }
 
-    #[test]
-    fn rejects_malformed_nodes() {
-        let leaf = RlpNodeCodec::leaf_node([0x12u8].into_iter(), 2, Value::Inline(b"v"));
-        // Trailing bytes after the node.
-        let mut trailing = leaf.clone();
-        trailing.push(0x00);
-        assert!(RlpNodeCodec::decode_plan(&leaf).is_ok());
-        assert!(RlpNodeCodec::decode_plan(&trailing).is_err());
-        // A list of three items.
-        let mut stream = RlpStream::new_list(3);
-        stream.append(&"a").append(&"b").append(&"c");
-        assert!(RlpNodeCodec::decode_plan(&stream.out()).is_err());
-        // Invalid hex-prefix flags.
-        let mut stream = RlpStream::new_list(2);
-        stream.append(&[0x40u8].as_slice()).append(&"v");
-        assert!(RlpNodeCodec::decode_plan(&stream.out()).is_err());
-        // Non-zero padding in an even path.
-        let mut stream = RlpStream::new_list(2);
-        stream.append(&[0x21u8].as_slice()).append(&"v");
-        assert!(RlpNodeCodec::decode_plan(&stream.out()).is_err());
-        // A branch child that is neither empty nor a hash.
-        let mut stream = RlpStream::new_list(17);
-        stream.append(&[0u8; 31].as_slice());
-        for _ in 0..16 {
-            stream.append_empty_data();
+    // The tests below pin down how nodes are decoded, including the encodings that no Ethereum
+    // client produces but that `ethereum-trie-db` accepted (see the module documentation).
+
+    /// A child reference to a hashed node.
+    const HASH: [u8; 32] = [0x11; 32];
+
+    /// The RLP encoding of the string `data`.
+    fn string(data: &[u8]) -> Vec<u8> {
+        let mut stream = RlpStream::new();
+        stream.append(&data);
+        stream.out().to_vec()
+    }
+
+    /// An RLP list of already encoded `items`.
+    fn list(items: &[&[u8]]) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(items.len());
+        for item in items {
+            stream.append_raw(item, 1);
         }
-        assert!(RlpNodeCodec::decode_plan(&stream.out()).is_err());
+        stream.out().to_vec()
+    }
+
+    /// A branch with `first` as its first child, no other children, and `value`; both encoded.
+    fn branch(first: &[u8], value: &[u8]) -> Vec<u8> {
+        let empty = string(&[]);
+        let mut items = vec![first];
+        items.extend(std::iter::repeat_n(empty.as_slice(), 15));
+        items.push(value);
+        list(&items)
+    }
+
+    /// An extension over the nibbles `1, 2` to the encoded `child`.
+    fn extension(child: &[u8]) -> Vec<u8> {
+        list(&[&string(&[0x00, 0x12]), child])
+    }
+
+    fn decode(node: &[u8]) -> NodePlan {
+        RlpNodeCodec::decode_plan(node).unwrap_or_else(|e| panic!("{}: {e:?}", hex::encode(node)))
+    }
+
+    fn rejects(node: &[u8]) -> bool {
+        RlpNodeCodec::decode_plan(node).is_err()
+    }
+
+    /// The nibbles of a leaf or extension path.
+    fn nibbles(node: &[u8]) -> Vec<u8> {
+        match decode(node) {
+            NodePlan::Leaf { partial, .. } | NodePlan::Extension { partial, .. } => {
+                partial.build(node).iter().collect()
+            }
+            plan => panic!("not a leaf or extension: {plan:?}"),
+        }
+    }
+
+    fn leaf_value(node: &[u8]) -> Vec<u8> {
+        let NodePlan::Leaf { value, .. } = decode(node) else {
+            panic!("expected a leaf");
+        };
+        let Value::Inline(value) = value.build(node) else {
+            panic!("expected an inline value");
+        };
+        value.to_vec()
+    }
+
+    fn branch_value(node: &[u8]) -> Option<Vec<u8>> {
+        let NodePlan::Branch { value, .. } = decode(node) else {
+            panic!("expected a branch");
+        };
+        value.map(|value| match value.build(node) {
+            Value::Inline(value) => value.to_vec(),
+            Value::Node(_) => panic!("expected an inline value"),
+        })
+    }
+
+    fn first_child(node: &[u8]) -> Option<NodeHandlePlan> {
+        match decode(node) {
+            NodePlan::Branch { children, .. } => children[0].clone(),
+            NodePlan::Extension { child, .. } => Some(child),
+            plan => panic!("not a branch or extension: {plan:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_rlp_that_is_not_a_node() {
+        assert!(rejects(&[]));
+        assert!(rejects(&[0xc0]));
+        assert!(rejects(&string(&[0x11])));
+        assert!(rejects(&list(&[
+            &string(b"a"),
+            &string(b"b"),
+            &string(b"c")
+        ])));
+        assert!(rejects(&list(&[&string(&[0x20])])));
+        // Bytes after a list are read as more items of it: here a third item.
+        let mut trailing = list(&[&string(&[0x20]), &string(b"v")]);
+        assert!(!rejects(&trailing));
+        trailing.push(0x00);
+        assert!(rejects(&trailing));
+    }
+
+    #[test]
+    fn bytes_after_a_list_are_more_items() {
+        let mut node = list(&[&string(&[0x20])]);
+        node.extend(string(b"v"));
+        assert_eq!(leaf_value(&node), b"v");
+    }
+
+    #[test]
+    fn empty_node_ignores_trailing_bytes() {
+        assert!(matches!(decode(&[0x80]), NodePlan::Empty));
+        assert!(matches!(decode(&[0x80, 0x00]), NodePlan::Empty));
+        assert!(RlpNodeCodec::is_empty_node(&[0x80]));
+        assert!(RlpNodeCodec::is_empty_node(&[0xc0, 0x00]));
+        assert!(!RlpNodeCodec::is_empty_node(&[]));
+    }
+
+    #[test]
+    fn empty_path_is_an_extension_without_nibbles() {
+        let hash = string(&HASH);
+        for path in [string(&[]), vec![0xc0], string(&[0x00])] {
+            let node = list(&[&path, &hash]);
+            assert!(matches!(decode(&node), NodePlan::Extension { .. }));
+            assert!(nibbles(&node).is_empty());
+        }
+    }
+
+    #[test]
+    fn reads_only_the_leaf_and_odd_flag_bits() {
+        let v = string(b"v");
+        // Odd leaf, odd extension, even leaf and even extension.
+        assert_eq!(nibbles(&list(&[&string(&[0x31, 0x23]), &v])), [1, 2, 3]);
+        assert_eq!(leaf_value(&list(&[&string(&[0x31, 0x23]), &v])), b"v");
+        assert!(matches!(
+            decode(&list(&[&string(&[0x11]), &v])),
+            NodePlan::Extension { .. }
+        ));
+        assert_eq!(nibbles(&list(&[&string(&[0x20, 0x12]), &v])), [1, 2]);
+        assert!(matches!(
+            decode(&list(&[&string(&[0x00, 0x12]), &v])),
+            NodePlan::Extension { .. }
+        ));
+        // Higher flag bits are ignored: 0x7_ is an odd leaf, 0x4_ an even extension.
+        assert_eq!(leaf_value(&list(&[&string(&[0x71, 0x23]), &v])), b"v");
+        assert_eq!(nibbles(&list(&[&string(&[0x71, 0x23]), &v])), [1, 2, 3]);
+        assert!(matches!(
+            decode(&list(&[&string(&[0x40, 0x12]), &v])),
+            NodePlan::Extension { .. }
+        ));
+        assert_eq!(nibbles(&list(&[&string(&[0x40, 0x12]), &v])), [1, 2]);
+        // The padding nibble of an even path is ignored.
+        assert_eq!(nibbles(&list(&[&string(&[0x2f, 0x12]), &v])), [1, 2]);
+    }
+
+    #[test]
+    fn path_is_read_from_the_payload_of_a_list() {
+        // The payload of `[0x20, 0x12]` is the bytes `20 12`: an even leaf path over `1, 2`.
+        let path = list(&[&string(&[0x20]), &string(&[0x12])]);
+        let node = list(&[&path, &string(b"v")]);
+        assert_eq!(nibbles(&node), [1, 2]);
+        assert_eq!(leaf_value(&node), b"v");
+    }
+
+    #[test]
+    fn value_is_the_payload_of_a_string_or_list() {
+        let hash = string(&HASH);
+        let listed = list(&[&string(b"v")]);
+        assert_eq!(leaf_value(&list(&[&string(&[0x20]), &listed])), b"v");
+        assert_eq!(leaf_value(&list(&[&string(&[0x20]), &string(&[])])), b"");
+        assert_eq!(
+            branch_value(&branch(&hash, &string(b"v"))),
+            Some(b"v".to_vec())
+        );
+        assert_eq!(branch_value(&branch(&hash, &listed)), Some(b"v".to_vec()));
+        assert_eq!(branch_value(&branch(&hash, &string(&[]))), None);
+        assert_eq!(branch_value(&branch(&hash, &[0xc0])), None);
+    }
+
+    #[test]
+    fn empty_branch_child_is_none() {
+        assert!(first_child(&branch(&string(&[]), &string(&[]))).is_none());
+        assert!(first_child(&branch(&[0xc0], &string(&[]))).is_none());
+    }
+
+    #[test]
+    fn child_is_a_hash_only_if_a_32_byte_string() {
+        let hash = string(&HASH);
+        assert_eq!(
+            first_child(&branch(&hash, &string(&[]))),
+            Some(NodeHandlePlan::Hash(2..34))
+        );
+        assert_eq!(
+            first_child(&extension(&hash)),
+            Some(NodeHandlePlan::Hash(5..37))
+        );
+        // Anything else is an embedded node, of any length.
+        let long_node = list(&[&string(&[0x20]), &string(&[7; 40])]);
+        for child in [
+            string(&[0x11]),
+            string(&[0x11; 31]),
+            string(&[0x11; 33]),
+            long_node.clone(),
+        ] {
+            for node in [branch(&child, &string(&[])), extension(&child)] {
+                let Some(NodeHandlePlan::Inline(range)) = first_child(&node) else {
+                    panic!("expected an embedded node: {}", hex::encode(&node));
+                };
+                assert_eq!(node[range], child);
+            }
+        }
+        // An embedded node is decoded only when a lookup reaches it.
+        assert!(rejects(&string(&[0x11; 31])));
+        assert!(!rejects(&long_node));
+    }
+
+    #[test]
+    fn extension_to_the_empty_string_embeds_the_empty_node() {
+        let node = extension(&string(&[]));
+        assert_eq!(first_child(&node), Some(NodeHandlePlan::Inline(4..5)));
+        assert!(matches!(decode(&[0x80]), NodePlan::Empty));
+        assert_eq!(
+            first_child(&extension(&[0xc0])),
+            Some(NodeHandlePlan::Inline(4..5))
+        );
+        assert!(rejects(&[0xc0]));
     }
 }
