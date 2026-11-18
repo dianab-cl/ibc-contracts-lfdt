@@ -137,11 +137,15 @@ fn decode_child(item: &Rlp<'_>, offset: usize) -> Result<NodeHandlePlan, Decoder
     if item.is_data() && item.size() == HASH_LENGTH {
         return Ok(NodeHandlePlan::Hash(payload_range(item, offset)?));
     }
+    if item.is_data() && item.size() == HASH_LENGTH {
+        return Ok(NodeHandlePlan::Hash(payload_range(item, offset)?));
+    }
 
     let len = item.as_raw().len();
     if len >= HASH_LENGTH {
         return Err(EMBEDDED_NODE_TOO_LONG);
     }
+    Ok(NodeHandlePlan::Inline(offset..offset + len))
     Ok(NodeHandlePlan::Inline(offset..offset + len))
 }
 
