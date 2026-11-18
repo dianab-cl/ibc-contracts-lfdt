@@ -14,9 +14,10 @@
 //!
 //! # Compatibility
 //!
-//! [`RlpNodeCodec`] decodes nodes exactly as the codec of the `ethereum-trie-db` crate it
-//! replaces: every proof is accepted or rejected as before, with the same error. That includes
-//! encodings no Ethereum client produces, which are decoded leniently:
+//! [`RlpNodeCodec`] decodes nodes as the codec of the `ethereum-trie-db` crate it replaces,
+//! except that it rejects an embedded child whose encoding is 32 bytes or longer. Every other
+//! proof is accepted or rejected as before, with the same error. That includes encodings no
+//! Ethereum client produces, which are decoded leniently:
 //! - Bytes after the empty node are ignored, and bytes after a list are read as more items of
 //!   it.
 //! - A path is read from the payload of its item, whether a string or a list. An empty string
@@ -25,8 +26,8 @@
 //!   of an even path is ignored.
 //! - A leaf or branch value is the payload of its item, whether a string or a list.
 //! - An empty string or list as a branch child or value means none.
-//! - A child that is a 32-byte string is a hash. Anything else, of any length, is an embedded
-//!   node, which fails to decode only if a lookup reaches it.
+//! - A child that is a 32-byte string is a hash. Anything else shorter than 32 bytes is an
+//!   embedded node, which fails to decode only if a lookup reaches it.
 //!
 //! The tests below pin each of these down.
 
@@ -89,8 +90,16 @@ impl TrieLayout for EthLayout {
 /// The error for RLP that is not a trie node; the message is the one `ethereum-trie-db` used.
 const NOT_A_NODE: DecoderError = DecoderError::Custom("Rlp is not valid.");
 
-/// Number of children of a branch; a branch has one more item, its value.
+/// The error for an embedded child whose encoding is too long to be embedded: a child of
+/// [`HASH_LENGTH`] bytes or more must be referenced by its hash.
+const EMBEDDED_NODE_TOO_LONG: DecoderError =
+    DecoderError::Custom("Embedded node is not shorter than a hash.");
+
+/// Number of children of a branch.
 const BRANCH_CHILDREN: usize = 16;
+
+/// Number of items of a branch node: its children and its value.
+const BRANCH_ITEMS: usize = BRANCH_CHILDREN + 1;
 
 /// The [`NodeCodec`] of Ethereum tries; see the module documentation for the encoding.
 #[derive(Debug, Clone, Copy, Default)]
@@ -107,29 +116,33 @@ fn payload_range(item: &Rlp<'_>, offset: usize) -> Result<Range<usize>, DecoderE
 /// a leaf, and where its nibbles are in the node.
 fn decode_path(item: &Rlp<'_>, offset: usize) -> Result<(bool, NibbleSlicePlan), DecoderError> {
     let range = payload_range(item, offset)?;
-    if item.is_empty() {
+    // The payload of a string or a list.
+    let Some(&flags) = item.data()?.first() else {
+        // An empty string or list: an extension with no nibbles.
         return Ok((false, NibbleSlicePlan::new(range.start..range.start, 0)));
-    }
-    // Not empty, so the payload (of a string or a list) has a first byte.
-    let flags = item.data()?.first().copied().unwrap_or_default();
-    let is_leaf = flags & HP_LEAF != 0;
+    };
     let plan = if flags & HP_ODD != 0 {
         // An odd path starts in the low nibble of the flag byte.
         NibbleSlicePlan::new(range, 1)
     } else {
         NibbleSlicePlan::new(range.start + 1..range.end, 0)
     };
+    let is_leaf = flags & HP_LEAF != 0;
     Ok((is_leaf, plan))
 }
 
 /// Decodes the item of a child of a branch or extension: a hash if it is a 32-byte string, and
-/// an embedded node otherwise.
+/// an embedded node if its encoding is shorter than a hash.
 fn decode_child(item: &Rlp<'_>, offset: usize) -> Result<NodeHandlePlan, DecoderError> {
     if item.is_data() && item.size() == HASH_LENGTH {
-        Ok(NodeHandlePlan::Hash(payload_range(item, offset)?))
-    } else {
-        Ok(NodeHandlePlan::Inline(offset..offset + item.as_raw().len()))
+        return Ok(NodeHandlePlan::Hash(payload_range(item, offset)?));
     }
+
+    let len = item.as_raw().len();
+    if len >= HASH_LENGTH {
+        return Err(EMBEDDED_NODE_TOO_LONG);
+    }
+    Ok(NodeHandlePlan::Inline(offset..offset + len))
 }
 
 impl NodeCodec for RlpNodeCodec {
@@ -158,7 +171,7 @@ impl NodeCodec for RlpNodeCodec {
                     Ok(NodePlan::Extension { partial, child })
                 }
             }
-            Prototype::List(len) if len == BRANCH_CHILDREN + 1 => {
+            Prototype::List(BRANCH_ITEMS) => {
                 let mut children: [Option<NodeHandlePlan>; BRANCH_CHILDREN] = Default::default();
                 for (index, child) in children.iter_mut().enumerate() {
                     let (item, offset) = node.at_with_offset(index)?;
@@ -496,14 +509,10 @@ mod tests {
             first_child(&extension(&hash)),
             Some(NodeHandlePlan::Hash(5..37))
         );
-        // Anything else is an embedded node, of any length.
-        let long_node = list(&[&string(&[0x20]), &string(&[7; 40])]);
-        for child in [
-            string(&[0x11]),
-            string(&[0x11; 31]),
-            string(&[0x11; 33]),
-            long_node.clone(),
-        ] {
+        // Anything else shorter than a hash is an embedded node.
+        let short_node = list(&[&string(&[0x20]), &string(&[7; 20])]);
+        for child in [string(&[0x11]), string(&[0x11; 30]), short_node.clone()] {
+            assert!(child.len() < HASH_LENGTH);
             for node in [branch(&child, &string(&[])), extension(&child)] {
                 let Some(NodeHandlePlan::Inline(range)) = first_child(&node) else {
                     panic!("expected an embedded node: {}", hex::encode(&node));
@@ -512,8 +521,25 @@ mod tests {
             }
         }
         // An embedded node is decoded only when a lookup reaches it.
-        assert!(rejects(&string(&[0x11; 31])));
-        assert!(!rejects(&long_node));
+        assert!(rejects(&string(&[0x11; 30])));
+        assert!(!rejects(&short_node));
+    }
+
+    #[test]
+    fn rejects_embedded_child_not_shorter_than_a_hash() {
+        let long_node = list(&[&string(&[0x20]), &string(&[7; 40])]);
+        // A 31-byte string encodes to exactly 32 bytes, the smallest rejected length.
+        for child in [string(&[0x11; 31]), string(&[0x11; 33]), long_node] {
+            assert!(child.len() >= HASH_LENGTH);
+            for node in [branch(&child, &string(&[])), extension(&child)] {
+                assert_eq!(
+                    RlpNodeCodec::decode_plan(&node),
+                    Err(EMBEDDED_NODE_TOO_LONG),
+                    "{}",
+                    hex::encode(&node)
+                );
+            }
+        }
     }
 
     #[test]
