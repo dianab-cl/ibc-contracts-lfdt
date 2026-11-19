@@ -13,18 +13,27 @@ name = "generate_json_schema"
 path = "src/bin/generate_json_schema.rs"
 
 [dependencies]
-ethereum-trie-db = { workspace = true }
 ethereum-types = { workspace = true }
 
 alloy-primitives = { workspace = true, features = ["serde", "hex-compat", "rlp"] }
-alloy-rlp = { workspace = true, features = ["arrayvec"] }
+alloy-rlp = { workspace = true, features = ["arrayvec", "derive"] }
 tree_hash = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 sha2 = { workspace = true }
 schemars = { workspace = true }
-hex = { workspace = true }
+hex = { workspace = true, features = ["alloc"] }
+
+# Merkle Patricia trie proofs (src/mpt)
+trie-db = { workspace = true, features = ["std"] }
+hash-db = { workspace = true }
+memory-db = { workspace = true }
+hash256-std-hasher = { workspace = true }
+rlp = { workspace = true, features = ["std"] }
+rlp-derive = { workspace = true }
+primitive-types = { workspace = true, features = ["rlp"] }
+sha3 = { workspace = true }
 
 # Only used for test-utils feature
 milagro_bls = { workspace = true, optional = true }

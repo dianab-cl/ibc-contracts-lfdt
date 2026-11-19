@@ -4711,19 +4711,26 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
- "ethereum-trie-db 0.1.0",
  "ethereum-types 0.1.0",
+ "hash-db",
+ "hash256-std-hasher",
  "hex",
  "ibc-eureka-solidity-types 0.1.0",
  "ibc-proto 0.52.0",
+ "memory-db 0.34.0",
  "milagro_bls",
+ "primitive-types 0.14.0",
  "prost 0.13.5",
+ "rlp 0.6.1",
+ "rlp-derive",
  "schemars 0.8.22",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "sha3",
  "thiserror 2.0.18",
  "tree_hash 0.1.0",
+ "trie-db",
 ]
 
 [[package]]
@@ -4733,7 +4740,7 @@ source = "git+https://github.com/cosmos/ibc-contracts?rev=035aa5eb171b6608614a9b
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
- "ethereum-trie-db 0.1.0 (git+https://github.com/cosmos/ibc-contracts?rev=035aa5eb171b6608614a9bc4e76e79d61c190e39)",
+ "ethereum-trie-db",
  "ethereum-types 0.1.0 (git+https://github.com/cosmos/ibc-contracts?rev=035aa5eb171b6608614a9bc4e76e79d61c190e39)",
  "hex",
  "schemars 0.8.22",
@@ -4742,23 +4749,6 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "tree_hash 0.1.0 (git+https://github.com/cosmos/ibc-contracts?rev=035aa5eb171b6608614a9bc4e76e79d61c190e39)",
-]
-
-[[package]]
-name = "ethereum-trie-db"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "hash-db",
- "hash256-std-hasher",
- "hex",
- "memory-db 0.34.0",
- "primitive-types 0.14.0",
- "rlp 0.6.1",
- "rlp-derive",
- "sha3",
- "thiserror 2.0.18",
- "trie-db",
 ]
 
 [[package]]
@@ -16020,9 +16010,9 @@ dependencies = [
 
 [[package]]
 name = "trie-db"
-version = "0.30.0"
+version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c0670ab45a6b7002c7df369fee950a27cf29ae0474343fd3a15aa15f691e7a6"
+checksum = "8768a658aaeca3b992933ee361e32f9e555f8056e7071d2a33e83c77b4db2df6"
 dependencies = [
  "hash-db",
  "log",

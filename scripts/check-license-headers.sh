@@ -29,10 +29,6 @@ hash_exts="yml yaml nix sh just"
 # Paths (git pathspec globs) that are never checked. Each entry is paired with the reason
 # it is excluded so this list stays auditable.
 EXCLUDED_PATHS=(
-  # GPL-3.0-or-later code derived from Open Ethereum / Parity Technologies. Stamping an
-  # Apache-2.0 header here would misstate the license. Pending a legal decision.
-  'packages/ethereum/trie-db/**'
-
   # Any `generated/` directory holds build output -- e.g. the Anchor IDL bindings that
   # solana-ibc-sdk/build.rs rewrites on every `cargo build`. Headers written there would be
   # silently discarded on the next regeneration.

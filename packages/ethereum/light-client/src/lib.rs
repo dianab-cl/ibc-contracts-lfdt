@@ -25,6 +25,7 @@ pub mod error;
 pub mod header;
 pub mod membership;
 pub mod misbehaviour;
+pub mod mpt;
 pub mod sync_protocol_helpers;
 pub mod trie;
 pub mod update;
