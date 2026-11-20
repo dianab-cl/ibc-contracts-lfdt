@@ -1,4 +1,6 @@
-//! This module defines [`TrieDBError`].
+// SPDX-License-Identifier: Apache-2.0
+
+//! This module defines [`TrieDBError`], the error of proof verification.
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error, Clone)]
 #[allow(missing_docs, clippy::module_name_repetitions)]

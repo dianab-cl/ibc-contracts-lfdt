@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"os"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -42,12 +44,14 @@ import (
 	"github.com/lfdt-ibc/ibc-contracts/packages/go-abigen/ibcerc20"
 	"github.com/lfdt-ibc/ibc-contracts/packages/go-abigen/ics20transfer"
 
+	"github.com/lfdt-ibc/ibc-contracts/e2e/v8/chainconfig"
 	"github.com/lfdt-ibc/ibc-contracts/e2e/v8/e2esuite"
 	proofapi "github.com/lfdt-ibc/ibc-contracts/e2e/v8/proofapi"
 	"github.com/lfdt-ibc/ibc-contracts/e2e/v8/testvalues"
 	"github.com/lfdt-ibc/ibc-contracts/e2e/v8/types"
 	ethereumtypes "github.com/lfdt-ibc/ibc-contracts/e2e/v8/types/ethereum"
 	proofapitypes "github.com/lfdt-ibc/ibc-contracts/e2e/v8/types/proofapi"
+	"github.com/lfdt-ibc/ibc-contracts/e2e/v8/wasm"
 )
 
 // ProofAPITestSuite is a suite of tests that wraps IbcEurekaTestSuite
@@ -860,40 +864,157 @@ func (s *ProofAPITestSuite) Test_10_FilteredRecvPacketToCosmos() {
 	s.FilteredRecvPacketToCosmosTest(ctx, 10, big.NewInt(testvalues.TransferAmount), []uint64{2, 6})
 }
 
-func (s *ProofAPITestSuite) FilteredRecvPacketToCosmosTest(ctx context.Context, numOfTransfers int, transferAmount *big.Int, recvFilter []uint64) {
-	s.Require().GreaterOrEqual(numOfTransfers, len(recvFilter))
-	s.Require().Greater(numOfTransfers, 0)
+// Test_Gloas_Fork_PeriodBoundary forks on the first epoch of a sync committee period, like every
+// mainnet fork since Altair. The light client updates skip from Fulu blocks to Gloas blocks.
+func (s *ProofAPITestSuite) Test_Gloas_Fork_PeriodBoundary() {
+	if chainconfig.GetKurtosisPreset() != testvalues.EnvValueEthereumPosPreset_Minimal {
+		s.T().Skip("A sync committee period of the mainnet preset takes too long")
+	}
+
+	s.GloasForkTest(context.Background(), 40)
+}
+
+// Test_Gloas_Fork_MidPeriod forks inside a sync committee period. On the minimal preset, the update
+// of the period attests a Gloas block and finalizes the Fulu block on the period boundary.
+//
+// This isn't expected on a real network: every mainnet fork since Altair, and the Gloas fork of
+// Sepolia, is on a sync committee period boundary. Nothing in the specs requires it, so the client
+// must still handle it.
+func (s *ProofAPITestSuite) Test_Gloas_Fork_MidPeriod() {
+	// On the mainnet preset, the test never leaves the first sync committee period, so it doesn't
+	// cover the update above.
+	if chainconfig.GetKurtosisPreset() != testvalues.EnvValueEthereumPosPreset_Minimal {
+		s.T().Skip("A sync committee period of the mainnet preset takes too long")
+	}
+
+	s.GloasForkTest(context.Background(), 41)
+}
+
+// GloasForkTest upgrades a live light client through the Gloas fork in the same way as on mainnet.
+// The client is created on Fulu with the latest release, which doesn't know about Gloas and is
+// served by the backwards compatible proof API module. The client is migrated to the local version
+// before the fork. A packet sent before the fork and a packet sent after it are then relayed
+// together, which updates the client past the fork.
+func (s *ProofAPITestSuite) GloasForkTest(ctx context.Context, gloasForkEpoch uint64) {
+	if os.Getenv(testvalues.EnvKeyEthTestnetType) != testvalues.EthTestnetTypePoS {
+		s.T().Skip("Test is only relevant for PoS networks")
+	}
+
+	proofType := types.GetEnvProofType()
+
+	defaultGloasForkEpoch := chainconfig.KurtosisConfig.NetworkParams.GloasForkEpoch
+	chainconfig.KurtosisConfig.NetworkParams.GloasForkEpoch = gloasForkEpoch
+	s.T().Cleanup(func() {
+		chainconfig.KurtosisConfig.NetworkParams.GloasForkEpoch = defaultGloasForkEpoch
+	})
+	s.T().Setenv(testvalues.EnvKeyE2EWasmLightClientTag, testvalues.PreGloasWasmLightClientTag)
+
+	s.SetupSuite(ctx, proofType)
 
 	eth, simd := s.Eth.Chains[0], s.Cosmos.Chains[0]
+
+	spec, err := eth.BeaconAPIClient.GetSpec()
+	s.Require().NoError(err)
+	s.Require().Equal(gloasForkEpoch, spec.GloasForkEpoch)
+
+	queryClientState := func() (ibcwasmtypes.ClientState, ethereumtypes.ClientState) {
+		resp, err := e2esuite.GRPCQuery[clienttypes.QueryClientStateResponse](ctx, simd, &clienttypes.QueryClientStateRequest{
+			ClientId: testvalues.FirstWasmClientID,
+		})
+		s.Require().NoError(err)
+
+		var wasmClientState ibcwasmtypes.ClientState
+		s.Require().NoError(proto.Unmarshal(resp.ClientState.Value, &wasmClientState))
+
+		var clientState ethereumtypes.ClientState
+		s.Require().NoError(json.Unmarshal(wasmClientState.Data, &clientState))
+
+		return wasmClientState, clientState
+	}
+	latestEpoch := func() uint64 {
+		wasmClientState, _ := queryClientState()
+		return wasmClientState.LatestHeight.RevisionHeight / spec.SlotsPerEpoch
+	}
+
+	s.FilteredRecvPacketToCosmosTest(ctx, 1, big.NewInt(testvalues.TransferAmount), nil)
+	s.Require().Less(latestEpoch(), gloasForkEpoch)
+
+	s.Require().True(s.Run("Migrate the light client before the fork", func() {
+		wasmBinary, err := wasm.GetLocalWasmEthLightClient()
+		s.Require().NoError(err)
+		checksum := s.PushNewWasmClientProposal(ctx, simd, s.SimdRelayerSubmitter, wasmBinary)
+
+		// The client state was last written by the latest release, which drops the fork it doesn't know
+		_, clientState := queryClientState()
+		s.Require().Nil(clientState.ForkParameters.Gloas)
+
+		forkParameters := clientState.ForkParameters
+		forkParameters.Gloas = &ethereumtypes.Fork{
+			Version: hexutil.Encode(spec.GloasForkVersion[:]),
+			Epoch:   spec.GloasForkEpoch,
+		}
+		s.wasmFixtureGenerator.AddFixtureStep("update_fork_parameters", forkParameters)
+		migrateMsg, err := json.Marshal(ethereumtypes.NewUpdateForkParametersMigrateMsg(forkParameters))
+		s.Require().NoError(err)
+		s.PushMigrateWasmClientProposal(ctx, simd, s.SimdRelayerSubmitter, testvalues.FirstWasmClientID, checksum, migrateMsg)
+
+		wasmClientState, clientState := queryClientState()
+		s.Require().Equal(checksum, hex.EncodeToString(wasmClientState.Checksum))
+		s.Require().Equal(forkParameters, clientState.ForkParameters)
+	}))
+
+	preForkTxHashes := s.SendTransfersToCosmos(ctx, 1, big.NewInt(testvalues.TransferAmount))
+
+	header, err := eth.BeaconAPIClient.GetHeader("head")
+	s.Require().NoError(err)
+	s.Require().Less(uint64(header.Header.Message.Slot)/spec.SlotsPerEpoch, gloasForkEpoch, "the chain forked before the packet was sent")
+
+	// The relay waits for the packet sent after the fork to finalize, so the client follows the fork
+	s.Require().True(s.Run("Wait for the fork", func() {
+		err := testutil.WaitForCondition(time.Minute*30, time.Second*10, func() (bool, error) {
+			header, err := eth.BeaconAPIClient.GetHeader("head")
+			if err != nil {
+				return false, err
+			}
+
+			epoch := uint64(header.Header.Message.Slot) / spec.SlotsPerEpoch
+			s.T().Logf("Waiting for epoch %d, current epoch: %d", gloasForkEpoch, epoch)
+			return epoch >= gloasForkEpoch, nil
+		})
+		s.Require().NoError(err)
+	}))
+
+	postForkTxHashes := s.SendTransfersToCosmos(ctx, 1, big.NewInt(testvalues.TransferAmount))
+	s.RelayTransfersToCosmos(ctx, append(preForkTxHashes, postForkTxHashes...), big.NewInt(testvalues.TransferAmount), nil)
+	s.Require().GreaterOrEqual(latestEpoch(), gloasForkEpoch)
+}
+
+func (s *ProofAPITestSuite) FilteredRecvPacketToCosmosTest(ctx context.Context, numOfTransfers int, transferAmount *big.Int, recvFilter []uint64) {
+	s.Require().GreaterOrEqual(numOfTransfers, len(recvFilter))
+
+	sendTxHashes := s.SendTransfersToCosmos(ctx, numOfTransfers, transferAmount)
+	s.RelayTransfersToCosmos(ctx, sendTxHashes, transferAmount, recvFilter)
+}
+
+// SendTransfersToCosmos sends transfers on Ethereum and returns the hashes of their transactions.
+func (s *ProofAPITestSuite) SendTransfersToCosmos(ctx context.Context, numOfTransfers int, transferAmount *big.Int) [][]byte {
+	s.Require().Greater(numOfTransfers, 0)
+
+	eth := s.Eth.Chains[0]
 
 	ics20Address := ethcommon.HexToAddress(s.contractAddresses.Ics20Transfer)
 	erc20Address := ethcommon.HexToAddress(s.contractAddresses.Erc20)
 
 	totalTransferAmount := new(big.Int).Mul(transferAmount, big.NewInt(int64(numOfTransfers)))
-	var relayedAmount *big.Int
-	if len(recvFilter) == 0 {
-		relayedAmount = totalTransferAmount
-	} else {
-		relayedAmount = new(big.Int).Mul(transferAmount, big.NewInt(int64(len(recvFilter))))
-	}
 	ethereumUserAddress := crypto.PubkeyToAddress(s.key.PublicKey)
-	cosmosUserWallet := s.Cosmos.Users[0]
-	cosmosUserAddress := cosmosUserWallet.FormattedAddress()
+	cosmosUserAddress := s.Cosmos.Users[0].FormattedAddress()
 	escrowAddress, err := s.ics20Contract.GetEscrow(nil, testvalues.CustomClientID)
 	s.Require().NoError(err)
-
-	denomOnCosmos := transfertypes.NewDenom(s.contractAddresses.Erc20, transfertypes.NewHop(transfertypes.PortID, testvalues.FirstWasmClientID))
 
 	escrowStartingBalance, err := s.erc20Contract.BalanceOf(nil, escrowAddress)
 	s.Require().NoError(err)
 	startBalanceEthereum, err := s.erc20Contract.BalanceOf(nil, ethereumUserAddress)
 	s.Require().NoError(err)
-	startBalanceCosmosResp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simd, &banktypes.QueryBalanceRequest{
-		Address: cosmosUserAddress,
-		Denom:   denomOnCosmos.IBCDenom(),
-	})
-	s.Require().NoError(err)
-	startBalanceCosmos := startBalanceCosmosResp.Balance.Amount.BigInt()
 
 	s.Require().True(s.Run("Approve the ICS20Transfer.sol contract to spend the erc20 tokens", func() {
 		tx, err := s.erc20Contract.Approve(s.GetTransactOpts(s.key, eth), ics20Address, totalTransferAmount)
@@ -910,7 +1031,8 @@ func (s *ProofAPITestSuite) FilteredRecvPacketToCosmosTest(ctx context.Context, 
 
 	var sendTxHashes [][]byte
 	s.Require().True(s.Run(fmt.Sprintf("Send %d transfers on Ethereum", numOfTransfers), func() {
-		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
+		// Long enough for a transfer sent before the Gloas fork to be relayed after it finalizes
+		timeout := uint64(time.Now().Add(time.Hour).Unix())
 
 		msgSendTransfer := ics20transfer.IICS20TransferMsgsSendTransferMsg{
 			Denom:            erc20Address,
@@ -949,6 +1071,30 @@ func (s *ProofAPITestSuite) FilteredRecvPacketToCosmosTest(ctx context.Context, 
 			s.Require().Equal(new(big.Int).Add(escrowStartingBalance, totalTransferAmount), escrowBalance)
 		}))
 	}))
+
+	return sendTxHashes
+}
+
+// RelayTransfersToCosmos relays the transfers of the given transactions, each with a single
+// transfer of the given amount, and verifies that they are received on Cosmos.
+func (s *ProofAPITestSuite) RelayTransfersToCosmos(ctx context.Context, sendTxHashes [][]byte, transferAmount *big.Int, recvFilter []uint64) {
+	eth, simd := s.Eth.Chains[0], s.Cosmos.Chains[0]
+
+	numOfRelayed := len(recvFilter)
+	if numOfRelayed == 0 {
+		numOfRelayed = len(sendTxHashes)
+	}
+	relayedAmount := new(big.Int).Mul(transferAmount, big.NewInt(int64(numOfRelayed)))
+	cosmosUserAddress := s.Cosmos.Users[0].FormattedAddress()
+
+	denomOnCosmos := transfertypes.NewDenom(s.contractAddresses.Erc20, transfertypes.NewHop(transfertypes.PortID, testvalues.FirstWasmClientID))
+
+	startBalanceCosmosResp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simd, &banktypes.QueryBalanceRequest{
+		Address: cosmosUserAddress,
+		Denom:   denomOnCosmos.IBCDenom(),
+	})
+	s.Require().NoError(err)
+	startBalanceCosmos := startBalanceCosmosResp.Balance.Amount.BigInt()
 
 	s.Require().True(s.Run("Receive packets on Cosmos chain", func() {
 		var relayTxBodyBz []byte
@@ -1213,12 +1359,12 @@ func (s *ProofAPITestSuite) Test_UpdateClientToCosmos() {
 				return false, err
 			}
 
-			finalizedBlock, err := strconv.ParseInt(resp.Data.FinalizedHeader.Execution.BlockNumber, 10, 64)
+			finalizedBlock, err := eth.RPCClient.HeaderByHash(ctx, ethcommon.HexToHash(*resp.Data.FinalizedHeader.ExecutionBlockHash))
 			if err != nil {
 				return false, err
 			}
 
-			code, err := eth.RPCClient.CodeAt(ctx, ics26Address, big.NewInt(finalizedBlock))
+			code, err := eth.RPCClient.CodeAt(ctx, ics26Address, finalizedBlock.Number)
 			if err != nil || len(code) == 0 {
 				// Code not found at the finalized block number
 				return false, nil
@@ -1267,13 +1413,62 @@ func (s *ProofAPITestSuite) Test_UpdateClientToCosmos() {
 	}))
 }
 
+// UpdateClientEarlyInPeriod waits until the latest finalized slot is early in its sync committee
+// period and updates the Ethereum light client on Cosmos to it. The light client only accepts
+// updates that are trusted against a consensus state in the sync committee period of its latest
+// slot, so this leaves the rest of the period for relay txs that are broadcast after the client
+// has been updated past their trusted slot.
+func (s *ProofAPITestSuite) UpdateClientEarlyInPeriod(ctx context.Context) {
+	eth, simd := s.Eth.Chains[0], s.Cosmos.Chains[0]
+
+	_, ethClientState := s.GetEthereumClientState(ctx, simd, testvalues.FirstWasmClientID)
+	period := ethClientState.EpochsPerSyncCommitteePeriod * ethClientState.SlotsPerEpoch
+
+	// A period has 8 epochs on the minimal preset, so this waits for the first epoch of a period
+	// there. On the mainnet preset it only waits during the last 7 of the 256 epochs of a period.
+	const minEpochsLeftInPeriod = 7
+
+	var finalizedSlot uint64
+	err := testutil.WaitForCondition(30*time.Minute, 5*time.Second, func() (bool, error) {
+		resp, err := eth.BeaconAPIClient.GetFinalityUpdate()
+		if err != nil {
+			return false, err
+		}
+
+		finalizedSlot, err = strconv.ParseUint(resp.Data.FinalizedHeader.Beacon.Slot, 10, 64)
+		if err != nil {
+			return false, err
+		}
+
+		return finalizedSlot%period+minEpochsLeftInPeriod*ethClientState.SlotsPerEpoch < period, nil
+	})
+	s.Require().NoError(err)
+
+	if finalizedSlot <= ethClientState.LatestSlot {
+		// The client is already at the latest finalized slot.
+		return
+	}
+
+	resp, err := s.ProofApiClient.UpdateClient(context.Background(), &proofapitypes.UpdateClientRequest{
+		SrcChain:    eth.ChainID.String(),
+		DstChain:    simd.Config().ChainID,
+		DstClientId: testvalues.FirstWasmClientID,
+	})
+	s.Require().NoError(err)
+	s.Require().NotEmpty(resp.Tx)
+
+	_ = s.MustBroadcastSdkTxBody(ctx, simd, s.SimdRelayerSubmitter, 2_000_000, resp.Tx)
+}
+
 // Test_HistoricalUpdateClientToCosmos tests updating the eth light client with updates that are not the latest
 // To do this, we will:
-// 1. Send a transfer on Ethereum
-// 2. Retrieve the relay tx from the relayer
-// 3. Wait until we have a finalized block that is past the update in the relay tx
-// 4. Update the client with the finalized block that is past the update in the relay tx
-// 5. Finally, we will relay the transfer tx, together with the historical update client
+// 1. Update the client early in a sync committee period, since the historical update must be
+// trusted against a consensus state in the sync committee period of the latest slot
+// 2. Send a transfer on Ethereum
+// 3. Retrieve the relay tx from the relayer
+// 4. Wait until we have a finalized block that is past the update in the relay tx
+// 5. Update the client with the finalized block that is past the update in the relay tx
+// 6. Finally, we will relay the transfer tx, together with the historical update client
 func (s *ProofAPITestSuite) Test_HistoricalUpdateClientToCosmos() {
 	if os.Getenv(testvalues.EnvKeyEthTestnetType) != testvalues.EthTestnetTypePoS {
 		s.T().Skip("Test is only relevant for PoS networks")
@@ -1301,6 +1496,10 @@ func (s *ProofAPITestSuite) Test_HistoricalUpdateClientToCosmos() {
 		receipt, err := eth.GetTxReciept(ctx, tx.Hash())
 		s.Require().NoError(err)
 		s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status)
+	}))
+
+	s.Require().True(s.Run("Update the client early in a sync committee period", func() {
+		s.UpdateClientEarlyInPeriod(ctx)
 	}))
 
 	var sendTxHash []byte
@@ -1631,6 +1830,14 @@ func (s *ProofAPITestSuite) ConcurrentRecvPacketToCosmos(
 			s.Require().Equal(totalTransferAmount, escrowBalance)
 		}))
 	}))
+
+	if os.Getenv(testvalues.EnvKeyEthTestnetType) == testvalues.EthTestnetTypePoS {
+		// The relay txs below are all built against the same latest slot, and must be broadcast
+		// before the client is updated to the next sync committee period.
+		s.Require().True(s.Run("Update the client early in a sync committee period", func() {
+			s.UpdateClientEarlyInPeriod(ctx)
+		}))
+	}
 
 	s.Require().True(s.Run("Relay the last packet", func() {
 		relayResp, err := s.ProofApiClient.RelayByTx(context.Background(), &proofapitypes.RelayByTxRequest{

@@ -3,10 +3,10 @@
 //! This module provides [`verify_membership`] function to verify the membership of a key in the
 //! storage trie.
 
-use alloy_primitives::{keccak256, Keccak256, U256};
-use ethereum_trie_db::trie_db::{
+use crate::mpt::{
     verify_account_storage_root, verify_storage_exclusion_proof, verify_storage_inclusion_proof,
 };
+use alloy_primitives::{keccak256, Keccak256, U256};
 use ethereum_types::execution::{account_proof::AccountProof, storage_proof::StorageProof};
 use serde::{Deserialize, Serialize};
 
